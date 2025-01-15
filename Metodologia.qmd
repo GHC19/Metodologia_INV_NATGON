@@ -1,0 +1,309 @@
+---
+title: "Metodologia"
+format: html
+editor: visual
+---
+
+## Librerias: 
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(pwr)
+```
+
+## Leer datos y limpiarlos
+```{r}
+datos <- read_excel("/Users/nataliasanchezsantos/Desktop/MASTER/METODOLOGÍA/Articulo/ECA_Prótesis Rodilla_Fiso Sala vs Piscina_115 sujetos.xlsx")
+str(datos)
+datos <- datos[,c(1,3,4,12,13,27,28,62,63,65,70,88,90,95)]
+datos <- datos |>  
+  janitor::clean_names()
+
+save(datos, file = "/Users/nataliasanchezsantos/Desktop/MASTER/METODOLOGÍA/Articulo/datos_metodologia.RData")
+#load(datos_metodologia.RData)
+```
+
+## Creamos la variable edad y sexo: 
+```{r}
+datos <- datos |> 
+  mutate(fecha_nacimiento = as.Date(fecha_nacimiento), 
+         fecha_62 = as.Date(fecha_62),
+         intervalo = fecha_62 - fecha_nacimiento,
+         edad = as.numeric(floor(intervalo/365.25))
+  )
+
+simular_sexo <- function(altura) {
+  probabilidad_hombre <- ifelse(altura > 1.65, 0.75, 0.3)
+  sexo <- ifelse(runif(1) < probabilidad_hombre, "Hombre", "Mujer")
+  return(sexo)
+}
+
+datos <- datos |> 
+  mutate(sexo = sapply(talla_m, simular_sexo))
+```
+
+
+## Crear dos tablas para cada medicion
+```{r}
+# Crear una tabla para el inicio del tratamiento
+inicio <- datos %>%
+  select(
+    i_ddatos, piscina_o_sala, fecha_nacimiento, edad, sexo, imc, 
+    pat_musculo_esqueleica, pat_cardio_respiratoria, fecha_62,
+    capacidad_funcional = womac_capacidad_funcional_65,
+    dolor = womac_dolor_63,
+    inflamacion = i_interlinea_articular_70
+  ) %>%
+  mutate(momento = "inicio")
+
+# Crear una tabla para el final del tratamiento
+final <- datos %>%
+  select(
+    i_ddatos, piscina_o_sala, fecha_nacimiento, edad, sexo, imc, 
+    pat_musculo_esqueleica, pat_cardio_respiratoria, fecha_62,
+    capacidad_funcional = womac_capacidad_funcional_90,
+    dolor = womac_dolor_88,
+    inflamacion = i_interlinea_articular_95
+  ) %>%
+  mutate(momento = "final")
+
+# Combinar las tablas de inicio y final
+datos_long <- bind_rows(inicio, final)
+
+# Ordenar por paciente y momento
+datos_long <- datos_long %>%
+  arrange(i_ddatos, momento)
+
+# Ver el resultado
+head(datos_long)
+```
+
+## Cambiamos nomnres de las variables:
+```{r}
+colnames(datos_long) <- c("sujeto", "tratamiento", "fecha_nacimiento", "edad", "sexo", "imc", "pat_musculo_esqueleica", "pat_cardio_respiratoria", "fecha_medicion", "capacidad_funcional", "dolor", "inflamacion", "momento")
+
+colnames(datos_long)
+```
+## Recodificamos todas las variables categóricas
+```{r}
+datos_long_s <- datos_long %>%
+  mutate(
+    tratamiento = ifelse(tratamiento == "P", 1, 0),  # P = 1, S = 0
+    pat_musculo_esqueleica = ifelse(pat_musculo_esqueleica == "Sí", 1, 0),  # Sí = 1, No = 0
+    pat_cardio_respiratoria = ifelse(pat_cardio_respiratoria == "Sí", 1, 0),  # Sí = 1, No = 0
+    momento = ifelse(momento == "inicio", 0, 1),  # inicio = 0, final = 1
+    sexo = ifelse(sexo == "Hombre", 0, 1) # Hombre = 0, Mujer = 1
+  )
+
+# Ver el resultado
+str(datos_long_s)
+
+```
+
+## Análisis Descriptivo:
+
+### Variables respuesta:
+```{r}
+tabla_descriptiva <- datos_long_s %>%
+  group_by(momento) %>%  # Agrupamos por momento (0 y 1)
+  summarise(
+    capacidad_funcional = paste0(round(mean(capacidad_funcional, na.rm = TRUE), 2), 
+                                 " (", round(sd(capacidad_funcional, na.rm = TRUE), 2), ")"),
+    dolor = paste0(round(mean(dolor, na.rm = TRUE), 2), 
+                   " (", round(sd(dolor, na.rm = TRUE), 2), ")"),
+    inflamacion = paste0(round(mean(inflamacion, na.rm = TRUE), 2), 
+                         " (", round(sd(inflamacion, na.rm = TRUE), 2), ")")
+  )
+
+# Visualizamos la tabla
+t(tabla_descriptiva)
+
+```
+### Variables de las características basales:
+```{r}
+datos_unicos <- datos_long_s %>%
+  distinct(sujeto, tratamiento, pat_musculo_esqueleica, pat_cardio_respiratoria, .keep_all = TRUE)
+
+continuas <- datos_unicos %>%
+  summarise(
+    talla = paste0(round(mean(imc, na.rm = TRUE), 2), " (", round(sd(imc, na.rm = TRUE), 2), ")"),
+    edad = paste0(round(mean(edad, na.rm = TRUE), 2), " (", round(sd(edad, na.rm = TRUE), 2), ")")
+  ) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "media (desv. típica)")
+
+# Descriptivo para las variables categóricas (tratamiento, pat_musculo_esqueleica, pat_cardio_respiratoria)
+categoricas <- datos_unicos %>%
+  summarise(
+    tratamiento = paste0(sum(tratamiento, na.rm = TRUE), " (", 
+                         round(mean(tratamiento, na.rm = TRUE) * 100, 2), "%)"),
+    pat_musculo_esqueleica = paste0(sum(pat_musculo_esqueleica, na.rm = TRUE), " (", 
+                                    round(mean(pat_musculo_esqueleica, na.rm = TRUE) * 100, 2), "%)"),
+    pat_cardio_respiratoria = paste0(sum(pat_cardio_respiratoria, na.rm = TRUE), " (", 
+                                     round(mean(pat_cardio_respiratoria, na.rm = TRUE) * 100, 2), "%)"),
+    sexo = paste0(sum(sexo, na.rm = TRUE), " (", 
+                                     round(mean(sexo, na.rm = TRUE) * 100, 2), "%)")
+
+  ) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "frecuencia (%)")
+
+# Combinamos ambas tablas
+tabla_descriptiva <- full_join(
+  continuas, categoricas, by = "variable"
+)
+
+# Visualizamos la tabla
+tabla_descriptiva
+```
+
+
+## Grafica para variables respuestas
+
+```{r}
+datos_grafica <- datos_long_s |> 
+  pivot_longer(cols = c(dolor, capacidad_funcional, inflamacion), 
+               names_to = "varaible_respuesta", 
+               values_to = "valores")
+
+ggplot(datos_grafica, aes(x = valores, fill = factor(tratamiento))) +
+  geom_density(alpha = 0.7) +
+  facet_wrap(varaible_respuesta ~ factor(momento), scales = "free") +
+  labs(x = "Valores", y = "Densidades", fill = "Tratamiento") +
+  theme_minimal()
+```
+
+
+## ANCOVA 
+
+```{r}
+modelo_dolor <- aov(dolor ~ tratamiento*momento + edad + imc + sexo + 
+                      pat_musculo_esqueleica + pat_cardio_respiratoria, 
+                    data = datos_long_s)
+summary(modelo_dolor)
+
+modelo_cap_funcional <- aov(capacidad_funcional ~ tratamiento*momento + edad + imc + sexo + 
+                      pat_musculo_esqueleica + pat_cardio_respiratoria, 
+                    data = datos_long_s)
+summary(modelo_cap_funcional)
+
+modelo_inflamacion <- aov(inflamacion ~ tratamiento*momento + edad + imc + sexo + 
+                      pat_musculo_esqueleica + pat_cardio_respiratoria, 
+                    data = datos_long_s)
+summary(modelo_inflamacion)
+
+modelo_dolor$coefficients
+modelo_cap_funcional$coefficients
+modelo_inflamacion$coefficients
+
+```
+
+EL tratamiento solo es significativo en el dolor. Por lo que el tipo de tratamiento, si es terapia en piscina o terapia en sala, tiene un efecto sobre el dolor. De hecho si observamos el coeficiente, es de -0.5, lo que signfica que el tratamiento en piscina (1) disminuye el dolor en 0.5 unidades comparado con el tratamiento en sala. 
+
+Mientras tanto, la interacción no es significativa para ninguna de las variables respuestas. Esto sugiere que el efecto del tratamiento (piscina vs. gimnasio) sobre el dolor, la capacidad funcional o la inflmación no depende del momento de la medición. 
+
+La edad es significativa para todos los modelos, luego esta covariable tiene un efecto para las tres variables repsuestas. El sexo y el imc tambien paracen tener un efecto aunque solo en la capacidad funcional y la inflamcion de la rodilla. Mientras que las dos patologías no tienen ingín tipo de efecto en el modelo. 
+
+Primeras impresiones ambos tratamiento seran equivalentes --> No demostramos superioridad de la hidroterapia, pero incluso es mejor mostrar la equivalencia para demostrar que es lo suficientemente buena como para "ser competencia". 
+
+## Test de equivalencia
+
+```{r}
+# Filtrar las mediciones "antes" (momento == 0) y "después" (momento == 1)
+datos_antes <- subset(datos_long_s, momento == 0)
+datos_despues <- subset(datos_long_s, momento == 1)
+
+# Ordenar los datos por 'sujeto' para asegurarnos de que estén emparejados
+datos_antes <- datos_antes[order(datos_antes$sujeto), ]
+datos_despues <- datos_despues[order(datos_despues$sujeto), ]
+
+# Verificar que los datos estén correctamente emparejados
+head(datos_antes)
+head(datos_despues)
+
+```
+
+
+```{r}
+
+datos_diferencia <- tibble(
+  sujeto = datos_antes$sujeto,
+  diferencia_dolor = datos_despues$dolor - datos_antes$dolor,
+  diferencia_capacidad_funcional = datos_despues$capacidad_funcional - datos_antes$capacidad_funcional,
+  diferencia_inflamacion = datos_despues$inflamacion - datos_antes$inflamacion,
+  tratamiento = datos_despues$tratamiento  # El tratamiento no cambia entre mediciones
+)
+
+# Ver las primeras filas de las diferencias
+head(datos_diferencia)
+```
+
+```{r}
+# Realizar el t-test pareado para cada variable
+# Para el dolor
+t.test(diferencia_dolor ~ tratamiento, data = datos_diferencia, na.rm = T)
+
+# Para la capacidad funcional
+t.test(diferencia_capacidad_funcional ~ tratamiento, data = datos_diferencia, na.rm = T)
+
+# Para la inflamación
+t.test(diferencia_inflamacion ~ tratamiento, data = datos_diferencia, na.rm = T)
+
+```
+
+### Comprobamos la relevancia clinca: 
+
+```{r}
+# Calcular media y desviación estándar para dolor, capacidad funcional e inflamación
+# Para dolor
+media_tratamiento_dolor <- mean(datos_long_s$dolor[datos_long_s$tratamiento == 1], na.rm = T)
+media_control_dolor <- mean(datos_long_s$dolor[datos_long_s$tratamiento == 0], na.rm = T)
+
+sd_tratamiento_dolor <- sd(datos_long_s$dolor[datos_long_s$tratamiento == 1], na.rm = T)
+sd_control_dolor <- sd(datos_long_s$dolor[datos_long_s$tratamiento == 0], na.rm = T)
+
+# Para capacidad funcional
+media_tratamiento_cap <- mean(datos_long_s$capacidad_funcional[datos_long_s$tratamiento == 1], na.rm = T)
+media_control_cap <- mean(datos_long_s$capacidad_funcional[datos_long_s$tratamiento == 0], na.rm = T)
+
+sd_tratamiento_cap <- sd(datos_long_s$capacidad_funcional[datos_long_s$tratamiento == 1], na.rm = T)
+sd_control_cap <- sd(datos_long_s$capacidad_funcional[datos_long_s$tratamiento == 0], na.rm = T)
+
+# Para inflamación
+media_tratamiento_infl <- mean(datos_long_s$inflamacion[datos_long_s$tratamiento == 1], na.rm = T)
+media_control_infl <- mean(datos_long_s$inflamacion[datos_long_s$tratamiento == 0], na.rm = T)
+
+sd_tratamiento_infl <- sd(datos_long_s$inflamacion[datos_long_s$tratamiento == 1], na.rm = T)
+sd_control_infl <- sd(datos_long_s$inflamacion[datos_long_s$tratamiento == 0], na.rm = T)
+
+```
+
+```{r}
+# Calcular Cohen's d para cada variable
+d_dolor <- (media_tratamiento_dolor - media_control_dolor) / sqrt((sd_tratamiento_dolor^2 + sd_control_dolor^2) / 2)
+d_capacidad_funcional <- (media_tratamiento_cap - media_control_cap) / sqrt((sd_tratamiento_cap^2 + sd_control_cap^2) / 2)
+d_inflamacion <- (media_tratamiento_infl - media_control_infl) / sqrt((sd_tratamiento_infl^2 + sd_control_infl^2) / 2)
+
+# Mostrar los tamaños del efecto
+d_dolor
+d_capacidad_funcional
+d_inflamacion
+
+```
+
+
+```{r}
+# Poder para dolor
+pwr.t.test(d = d_dolor, n = 115, sig.level = 0.05, type = "two.sample", alternative = "two.sided")
+```
+
+```{r}
+# Poder para dolor
+pwr.t.test(d = d_dolor, n = NULL, sig.level = 0.05, type = "two.sample", alternative = "two.sided", power = 0.8)
+```
+
+No hay relevancia clinica, necesitariamos aumentar el tamaño muestral a 202 pacientes, para tener una potencia minima del 80%.
+
